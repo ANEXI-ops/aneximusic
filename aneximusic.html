@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anexi Music — Spotify Connect</title>
+<style>
+:root{--acc:#1db954}
+*{box-sizing:border-box;margin:0}
+body{background:#0d0d0d;color:#fff;font:15px/1.5 system-ui,sans-serif;min-height:100vh;display:flex;justify-content:center}
+#app{width:100%;max-width:480px;padding:24px}
+h1{font-size:26px;margin-bottom:6px}
+.mu{color:#999;font-size:13px;margin-bottom:22px}
+.card{background:#161616;border:1px solid #262626;border-radius:16px;padding:18px;margin-bottom:16px}
+button{background:var(--acc);color:#fff;border:0;border-radius:99px;padding:13px 22px;font:inherit;font-weight:700;cursor:pointer;width:100%}
+button:hover{filter:brightness(1.1)}
+button.sec{background:#262626}
+.song{display:flex;align-items:center;gap:12px;padding:10px 4px;border-bottom:1px solid #222;cursor:pointer}
+.song:hover{background:#1c1c1c}
+.song img{width:46px;height:46px;border-radius:8px;object-fit:cover;background:#333}
+.song .t{flex:1;min-width:0}
+.song b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.song small{color:#999;display:block}
+.bar{width:100%;height:6px;background:#333;border-radius:4px;margin:10px 0;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--acc)}
+.ctl{display:flex;gap:10px;justify-content:center;margin-top:12px}
+.ctl button{width:auto;flex:none;padding:12px 20px}
+.err{color:#ff6a6a;font-size:13px;margin-top:8px}
+code{background:#1c1c1c;padding:2px 6px;border-radius:6px;font-size:12px}
+</style></head><body><div id="app">
+<h1>Anexi Music — Spotify Connect</h1>
+<div class="mu">Real Spotify playback via the official Web Playback SDK. Needs <b>Spotify Premium</b>.</div>
+
+<div class="card" id="setup">
+  <p style="margin-bottom:10px"><b>One-time setup (do this before clicking Connect):</b></p>
+  <ol style="padding-left:18px;line-height:1.8;font-size:14px;color:#ccc">
+    <li>Open your app on <a href="https://developer.spotify.com/dashboard" target="_blank" style="color:var(--acc)">developer.spotify.com/dashboard</a></li>
+    <li>Click <b>Edit Settings</b> → under <b>Redirect URIs</b> add exactly the URL this page is running at (shown below), then <b>Save</b>.</li>
+    <li>Below, paste your app's <b>Client ID</b> only — never the Client secret, it's not needed here.</li>
+  </ol>
+  <p class="mu">This page's URL (must match a Redirect URI in your dashboard): <code id="here"></code></p>
+  <input id="cid" placeholder="Your Spotify Client ID" style="width:100%;padding:12px;border-radius:10px;border:1px solid #333;background:#0d0d0d;color:#fff;margin:10px 0;font:inherit">
+  <button onclick="startLogin()">Connect Spotify</button>
+  <div class="err" id="err"></div>
+</div>
+
+<div class="card" id="player" style="display:none">
+  <div id="who" class="mu"></div>
+  <div id="np" style="display:flex;gap:12px;align-items:center">
+    <img id="npImg" style="width:56px;height:56px;border-radius:10px;background:#333">
+    <div class="t"><b id="npT">Nothing playing</b><small id="npA"></small></div>
+  </div>
+  <div class="bar"><i id="fill"></i></div>
+  <div class="ctl">
+    <button class="sec" onclick="cmd('previous')">⏮</button>
+    <button onclick="cmd('toggle')" id="ppBtn">▶</button>
+    <button class="sec" onclick="cmd('next')">⏭</button>
+  </div>
+</div>
+
+<div class="card" id="tracks" style="display:none">
+  <p style="margin-bottom:10px"><b>Your top tracks</b> — tap to play</p>
+  <div id="list"></div>
+</div>
+</div>
+
+<script>
+const REDIRECT_URI = location.origin + location.pathname;
+document.getElementById('here').textContent = REDIRECT_URI;
+const SCOPES = 'streaming user-read-email user-read-private user-top-read user-modify-playback-state user-read-playback-state';
+
+// ---- PKCE helpers ----
+function b64url(buf){return btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}
+async function sha256(s){return await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s))}
+function randStr(n=64){const a=new Uint8Array(n);crypto.getRandomValues(a);return b64url(a)}
+
+async function startLogin(){
+  const cid = document.getElementById('cid').value.trim();
+  if(!cid){document.getElementById('err').textContent='Enter your Client ID first.';return}
+  localStorage.setItem('sp_cid', cid);
+  const verifier = randStr();
+  localStorage.setItem('sp_verifier', verifier);
+  const challenge = b64url(await sha256(verifier));
+  const url = new URL('https://accounts.spotify.com/authorize');
+  url.searchParams.set('client_id', cid);
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('redirect_uri', REDIRECT_URI);
+  url.searchParams.set('scope', SCOPES);
+  url.searchParams.set('code_challenge_method', 'S256');
+  url.searchParams.set('code_challenge', challenge);
+  location.href = url.toString();
+}
+
+async function exchangeCode(code){
+  const cid = localStorage.getItem('sp_cid');
+  const verifier = localStorage.getItem('sp_verifier');
+  const body = new URLSearchParams({
+    client_id: cid, grant_type: 'authorization_code', code,
+    redirect_uri: REDIRECT_URI, code_verifier: verifier
+  });
+  const res = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: {'Content-Type':'application/x-www-form-urlencoded'},
+    body
+  });
+  const data = await res.json();
+  if(data.access_token){
+    localStorage.setItem('sp_token', data.access_token);
+    localStorage.setItem('sp_refresh', data.refresh_token);
+    history.replaceState({}, '', REDIRECT_URI);
+    boot();
+  } else {
+    document.getElementById('err').textContent = 'Login failed: ' + (data.error_description || JSON.stringify(data));
+  }
+}
+
+async function api(path, opts={}){
+  const token = localStorage.getItem('sp_token');
+  const res = await fetch('https://api.spotify.com/'+path, {
+    ...opts,
+    headers: {...(opts.headers||{}), Authorization: 'Bearer '+token}
+  });
+  if(res.status===204) return null;
+  return res.json();
+}
+
+let deviceId=null, player=null;
+
+function loadSDK(){
+  return new Promise(resolve=>{
+    if(window.Spotify){resolve();return}
+    window.onSpotifyWebPlaybackSDKReady = resolve;
+    const s=document.createElement('script'); s.src='https://sdk.scdn.co/spotify-player.js'; document.head.appendChild(s);
+  });
+}
+
+async function boot(){
+  const token = localStorage.getItem('sp_token');
+  if(!token) return;
+  document.getElementById('setup').style.display='none';
+  document.getElementById('player').style.display='block';
+  document.getElementById('tracks').style.display='block';
+
+  const me = await api('v1/me');
+  if(me.error){document.getElementById('err').textContent='Session expired, please reconnect.';localStorage.removeItem('sp_token');document.getElementById('setup').style.display='block';document.getElementById('player').style.display='none';document.getElementById('tracks').style.display='none';return}
+  document.getElementById('who').textContent = 'Connected as ' + me.display_name + (me.product!=='premium' ? '  •  Note: your account is not Premium — Spotify only allows full playback via this SDK for Premium accounts.' : '');
+
+  await loadSDK();
+  player = new Spotify.Player({
+    name: 'Anexi Music',
+    getOAuthToken: cb => cb(localStorage.getItem('sp_token')),
+    volume: 0.8
+  });
+  player.addListener('ready', ({device_id}) => { deviceId = device_id; loadTop(); });
+  player.addListener('player_state_changed', st => {
+    if(!st) return;
+    const tr = st.track_window.current_track;
+    document.getElementById('npT').textContent = tr.name;
+    document.getElementById('npA').textContent = tr.artists.map(a=>a.name).join(', ');
+    document.getElementById('npImg').src = tr.album.images[0]?.url || '';
+    document.getElementById('fill').style.width = (st.position/st.duration*100)+'%';
+    document.getElementById('ppBtn').textContent = st.paused ? '▶' : '⏸';
+  });
+  player.addListener('initialization_error', e=>document.getElementById('err').textContent=e.message);
+  player.addListener('authentication_error', e=>document.getElementById('err').textContent=e.message);
+  player.addListener('account_error', e=>document.getElementById('err').textContent='Account error (Premium required): '+e.message);
+  player.connect();
+}
+
+async function loadTop(){
+  const data = await api('v1/me/top/tracks?time_range=long_term&limit=10');
+  const el = document.getElementById('list');
+  el.innerHTML = (data.items||[]).map(t=>`
+    <div class="song" onclick="playUri('${t.uri}')">
+      <img src="${t.album.images[2]?.url || t.album.images[0]?.url || ''}">
+      <div class="t"><b>${t.name}</b><small>${t.artists.map(a=>a.name).join(', ')}</small></div>
+    </div>`).join('') || '<p class="mu">No top tracks found.</p>';
+}
+
+async function playUri(uri){
+  await api('v1/me/player/play?device_id='+deviceId, {
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({uris:[uri]})
+  });
+}
+
+function cmd(a){
+  if(!player) return;
+  if(a==='toggle') player.togglePlay();
+  if(a==='next') player.nextTrack();
+  if(a==='previous') player.previousTrack();
+}
+
+// on load: either handle the OAuth redirect, or resume an existing session
+const params = new URLSearchParams(location.search);
+if(params.get('code')) exchangeCode(params.get('code'));
+else if(localStorage.getItem('sp_token')) boot();
+if(params.get('error')) document.getElementById('err').textContent = 'Spotify said: '+params.get('error');
+</script></body></html>
